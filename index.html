@@ -5,25 +5,64 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Shared MP3 Player</title>
   <style>
-    :root { font-family: system-ui, sans-serif; }
+    :root { font-family: system-ui, sans-serif; color-scheme: light; }
+    * { box-sizing: border-box; }
     body {
       min-height: 100vh;
       margin: 0;
       display: grid;
       place-items: center;
+      padding: 16px;
       background: #f5f5f5;
     }
     .player {
-      width: min(560px, calc(100vw - 32px));
+      width: min(600px, 100%);
       padding: 24px;
-      box-sizing: border-box;
       background: white;
       border: 1px solid #d8d8d8;
       border-radius: 14px;
       box-shadow: 0 8px 30px rgba(0,0,0,.08);
     }
     h1 { margin: 0 0 8px; font-size: 1.35rem; }
-    .status { margin: 0 0 20px; color: #555; min-height: 1.4em; }
+    .status { margin: 0 0 18px; color: #555; min-height: 1.4em; }
+
+    .drop-zone {
+      display: grid;
+      place-items: center;
+      min-height: 150px;
+      padding: 22px;
+      margin-bottom: 20px;
+      text-align: center;
+      border: 2px dashed #aaa;
+      border-radius: 12px;
+      background: #fafafa;
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease;
+    }
+    .drop-zone:hover,
+    .drop-zone.is-dragging {
+      border-color: #333;
+      background: #f0f0f0;
+    }
+    .drop-zone strong { display: block; margin-bottom: 6px; }
+    .drop-zone small { color: #666; }
+    .file-name {
+      margin-top: 10px;
+      font-size: .9rem;
+      overflow-wrap: anywhere;
+    }
+    .file-input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
     .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     button {
       font: inherit;
@@ -33,34 +72,39 @@
       background: #fff;
       cursor: pointer;
     }
-    button:hover { background: #f2f2f2; }
+    button:hover:not(:disabled) { background: #f2f2f2; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
     .volume {
       display: flex;
       gap: 10px;
       align-items: center;
       margin-top: 18px;
     }
-    .volume input { flex: 1; }
-    .note { margin-top: 20px; font-size: .88rem; color: #666; line-height: 1.45; }
+    .volume input { flex: 1; min-width: 0; }
+    .note { margin: 20px 0 0; font-size: .88rem; color: #666; line-height: 1.45; }
   </style>
 </head>
 <body>
-  <!--
-    This is the SOURCE element.
-    `shared` makes its can-play state available to other PlayHTML pages.
-    Keep the id stable: shared-audio-player
-  -->
   <main id="shared-audio-player" class="player" can-play shared>
     <h1>Shared MP3 Player</h1>
-    <p class="status" data-status>Connecting…</p>
+    <p class="status" data-status>Drop an MP3 to begin.</p>
 
-    <!-- Replace track.mp3 with your MP3 URL or relative file path. -->
-    <audio data-audio src="track.mp3" preload="metadata"></audio>
+    <label class="drop-zone" data-drop-zone>
+      <input class="file-input" data-file-input type="file" accept="audio/mpeg,.mp3" />
+      <span>
+        <strong>Drop an MP3 here</strong>
+        <small>or click this area to choose a file</small>
+        <span class="file-name" data-file-name>No MP3 loaded</span>
+      </span>
+    </label>
+
+    <audio data-audio preload="metadata"></audio>
 
     <div class="controls" aria-label="Audio controls">
-      <button type="button" data-action="play">Play</button>
-      <button type="button" data-action="pause">Pause</button>
-      <button type="button" data-action="stop">Stop</button>
+      <button type="button" data-action="play" disabled>Play</button>
+      <button type="button" data-action="pause" disabled>Pause</button>
+      <button type="button" data-action="stop" disabled>Stop</button>
     </div>
 
     <label class="volume">
@@ -70,8 +114,7 @@
     </label>
 
     <p class="note">
-      Play, pause, stop and volume are stored as shared PlayHTML state.
-      Other page variants can point at this element with data-source.
+      Play, pause, stop and volume are synchronised through PlayHTML. The dropped MP3 itself stays local to this browser.
     </p>
   </main>
 
@@ -81,15 +124,25 @@
     const root = document.getElementById("shared-audio-player");
     const audio = root.querySelector("[data-audio]");
     const statusEl = root.querySelector("[data-status]");
+    const dropZone = root.querySelector("[data-drop-zone]");
+    const fileInput = root.querySelector("[data-file-input]");
+    const fileNameEl = root.querySelector("[data-file-name]");
     const volumeEl = root.querySelector("[data-volume]");
     const volumeOutput = root.querySelector("[data-volume-output]");
+    const playButton = root.querySelector('[data-action="play"]');
+    const pauseButton = root.querySelector('[data-action="pause"]');
+    const stopButton = root.querySelector('[data-action="stop"]');
 
-    // Persistent, synchronised state for the custom can-play element.
+    let currentObjectUrl = null;
+    let localTrackKey = "";
+
     root.defaultData = {
-      state: "stopped",      // "playing" | "paused" | "stopped"
-      position: 0,           // seconds at the moment of the last command
-      startedAt: 0,          // Date.now() when playback last started/resumed
-      volume: 0.8
+      state: "stopped",
+      position: 0,
+      startedAt: 0,
+      volume: 0.8,
+      trackKey: "",
+      trackName: ""
     };
 
     function expectedPosition(data) {
@@ -98,7 +151,7 @@
     }
 
     function seekIfNeeded(target, force = false) {
-      if (!Number.isFinite(target)) return;
+      if (!Number.isFinite(target) || !audio.src) return;
       const apply = () => {
         try {
           if (force || Math.abs(audio.currentTime - target) > 0.75) {
@@ -110,13 +163,61 @@
       else audio.addEventListener("loadedmetadata", apply, { once: true });
     }
 
-    // PlayHTML calls this whenever shared state changes locally or remotely.
+    function setControlsEnabled(enabled) {
+      playButton.disabled = !enabled;
+      pauseButton.disabled = !enabled;
+      stopButton.disabled = !enabled;
+    }
+
+    function makeTrackKey(file) {
+      return `${file.name}|${file.size}|${file.lastModified}`;
+    }
+
+    function loadLocalFile(file, setData) {
+      if (!file) return;
+      const looksLikeMp3 = file.type === "audio/mpeg" || file.name.toLowerCase().endsWith(".mp3");
+      if (!looksLikeMp3) {
+        statusEl.textContent = "Please choose an MP3 file.";
+        return;
+      }
+
+      audio.pause();
+      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+
+      currentObjectUrl = URL.createObjectURL(file);
+      localTrackKey = makeTrackKey(file);
+      audio.src = currentObjectUrl;
+      audio.load();
+
+      fileNameEl.textContent = file.name;
+      setControlsEnabled(true);
+      statusEl.textContent = "MP3 loaded. Ready to play.";
+
+      setData((draft) => {
+        draft.trackKey = localTrackKey;
+        draft.trackName = file.name;
+        draft.state = "stopped";
+        draft.position = 0;
+        draft.startedAt = 0;
+      });
+    }
+
     root.updateElement = ({ data }) => {
       const target = expectedPosition(data);
 
       audio.volume = Math.min(1, Math.max(0, Number(data.volume ?? 0.8)));
       volumeEl.value = String(audio.volume);
       volumeOutput.value = `${Math.round(audio.volume * 100)}%`;
+
+      if (data.trackKey && data.trackKey !== localTrackKey) {
+        audio.pause();
+        statusEl.textContent = data.trackName
+          ? `Shared track is “${data.trackName}”. Drop the same MP3 on this page to join playback.`
+          : "Another page selected an MP3. Drop the same file here to join playback.";
+        return;
+      }
+
+      if (!audio.src) return;
 
       if (data.state === "playing") {
         seekIfNeeded(target);
@@ -136,18 +237,12 @@
       }
     };
 
-    // Attach normal DOM controls, but write every command into PlayHTML state.
     root.onMount = ({ getData, setData }) => {
-      const playButton = root.querySelector('[data-action="play"]');
-      const pauseButton = root.querySelector('[data-action="pause"]');
-      const stopButton = root.querySelector('[data-action="stop"]');
-
-      const onPlay = async () => {
+      const onPlay = () => {
+        if (!audio.src) return;
         const data = getData();
         const position = data.state === "stopped" ? 0 : audio.currentTime;
 
-        // This direct call occurs inside the user's click gesture, helping with
-        // browser autoplay restrictions on the device that initiated playback.
         seekIfNeeded(position, true);
         audio.play().catch(() => {});
 
@@ -159,6 +254,7 @@
       };
 
       const onPause = () => {
+        if (!audio.src) return;
         const position = audio.currentTime;
         audio.pause();
         setData((draft) => {
@@ -169,6 +265,7 @@
       };
 
       const onStop = () => {
+        if (!audio.src) return;
         audio.pause();
         seekIfNeeded(0, true);
         setData((draft) => {
@@ -194,17 +291,31 @@
         });
       };
 
+      const onFileChange = () => loadLocalFile(fileInput.files?.[0], setData);
+      const onDragOver = (event) => {
+        event.preventDefault();
+        dropZone.classList.add("is-dragging");
+      };
+      const onDragLeave = () => dropZone.classList.remove("is-dragging");
+      const onDrop = (event) => {
+        event.preventDefault();
+        dropZone.classList.remove("is-dragging");
+        loadLocalFile(event.dataTransfer?.files?.[0], setData);
+      };
+
       playButton.addEventListener("click", onPlay);
       pauseButton.addEventListener("click", onPause);
       stopButton.addEventListener("click", onStop);
       volumeEl.addEventListener("input", onVolume);
       audio.addEventListener("ended", onEnded);
+      fileInput.addEventListener("change", onFileChange);
+      dropZone.addEventListener("dragover", onDragOver);
+      dropZone.addEventListener("dragleave", onDragLeave);
+      dropZone.addEventListener("drop", onDrop);
 
-      // Periodically correct noticeable playback drift while shared state says
-      // the track is playing.
       const driftTimer = setInterval(() => {
         const data = getData();
-        if (data.state === "playing" && !audio.paused) {
+        if (data.state === "playing" && !audio.paused && data.trackKey === localTrackKey) {
           seekIfNeeded(expectedPosition(data));
         }
       }, 2000);
@@ -216,8 +327,16 @@
         stopButton.removeEventListener("click", onStop);
         volumeEl.removeEventListener("input", onVolume);
         audio.removeEventListener("ended", onEnded);
+        fileInput.removeEventListener("change", onFileChange);
+        dropZone.removeEventListener("dragover", onDragOver);
+        dropZone.removeEventListener("dragleave", onDragLeave);
+        dropZone.removeEventListener("drop", onDrop);
       };
     };
+
+    window.addEventListener("beforeunload", () => {
+      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+    });
 
     await playhtml.init();
   </script>
