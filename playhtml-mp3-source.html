@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shared MP3 Player</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: #f5f5f5;
+    }
+    .player {
+      width: min(560px, calc(100vw - 32px));
+      padding: 24px;
+      box-sizing: border-box;
+      background: white;
+      border: 1px solid #d8d8d8;
+      border-radius: 14px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.08);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.35rem; }
+    .status { margin: 0 0 20px; color: #555; min-height: 1.4em; }
+    .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button {
+      font: inherit;
+      padding: 10px 16px;
+      border: 1px solid #bbb;
+      border-radius: 9px;
+      background: #fff;
+      cursor: pointer;
+    }
+    button:hover { background: #f2f2f2; }
+    .volume {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 18px;
+    }
+    .volume input { flex: 1; }
+    .note { margin-top: 20px; font-size: .88rem; color: #666; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <!--
+    This is the SOURCE element.
+    `shared` makes its can-play state available to other PlayHTML pages.
+    Keep the id stable: shared-audio-player
+  -->
+  <main id="shared-audio-player" class="player" can-play shared>
+    <h1>Shared MP3 Player</h1>
+    <p class="status" data-status>Connecting…</p>
+
+    <!-- Replace track.mp3 with your MP3 URL or relative file path. -->
+    <audio data-audio src="track.mp3" preload="metadata"></audio>
+
+    <div class="controls" aria-label="Audio controls">
+      <button type="button" data-action="play">Play</button>
+      <button type="button" data-action="pause">Pause</button>
+      <button type="button" data-action="stop">Stop</button>
+    </div>
+
+    <label class="volume">
+      <span>Volume</span>
+      <input data-volume type="range" min="0" max="1" step="0.01" value="0.8" />
+      <output data-volume-output>80%</output>
+    </label>
+
+    <p class="note">
+      Play, pause, stop and volume are stored as shared PlayHTML state.
+      Other page variants can point at this element with data-source.
+    </p>
+  </main>
+
+  <script type="module">
+    import { playhtml } from "https://unpkg.com/playhtml";
+
+    const root = document.getElementById("shared-audio-player");
+    const audio = root.querySelector("[data-audio]");
+    const statusEl = root.querySelector("[data-status]");
+    const volumeEl = root.querySelector("[data-volume]");
+    const volumeOutput = root.querySelector("[data-volume-output]");
+
+    // Persistent, synchronised state for the custom can-play element.
+    root.defaultData = {
+      state: "stopped",      // "playing" | "paused" | "stopped"
+      position: 0,           // seconds at the moment of the last command
+      startedAt: 0,          // Date.now() when playback last started/resumed
+      volume: 0.8
+    };
+
+    function expectedPosition(data) {
+      if (data.state !== "playing" || !data.startedAt) return data.position || 0;
+      return Math.max(0, (data.position || 0) + (Date.now() - data.startedAt) / 1000);
+    }
+
+    function seekIfNeeded(target, force = false) {
+      if (!Number.isFinite(target)) return;
+      const apply = () => {
+        try {
+          if (force || Math.abs(audio.currentTime - target) > 0.75) {
+            audio.currentTime = Math.max(0, target);
+          }
+        } catch (_) {}
+      };
+      if (audio.readyState >= 1) apply();
+      else audio.addEventListener("loadedmetadata", apply, { once: true });
+    }
+
+    // PlayHTML calls this whenever shared state changes locally or remotely.
+    root.updateElement = ({ data }) => {
+      const target = expectedPosition(data);
+
+      audio.volume = Math.min(1, Math.max(0, Number(data.volume ?? 0.8)));
+      volumeEl.value = String(audio.volume);
+      volumeOutput.value = `${Math.round(audio.volume * 100)}%`;
+
+      if (data.state === "playing") {
+        seekIfNeeded(target);
+        audio.play().then(() => {
+          statusEl.textContent = "Playing";
+        }).catch(() => {
+          statusEl.textContent = "Playback is synchronised, but this browser blocked autoplay. Press Play once on this device.";
+        });
+      } else if (data.state === "paused") {
+        audio.pause();
+        seekIfNeeded(data.position || 0, true);
+        statusEl.textContent = "Paused";
+      } else {
+        audio.pause();
+        seekIfNeeded(0, true);
+        statusEl.textContent = "Stopped";
+      }
+    };
+
+    // Attach normal DOM controls, but write every command into PlayHTML state.
+    root.onMount = ({ getData, setData }) => {
+      const playButton = root.querySelector('[data-action="play"]');
+      const pauseButton = root.querySelector('[data-action="pause"]');
+      const stopButton = root.querySelector('[data-action="stop"]');
+
+      const onPlay = async () => {
+        const data = getData();
+        const position = data.state === "stopped" ? 0 : audio.currentTime;
+
+        // This direct call occurs inside the user's click gesture, helping with
+        // browser autoplay restrictions on the device that initiated playback.
+        seekIfNeeded(position, true);
+        audio.play().catch(() => {});
+
+        setData((draft) => {
+          draft.state = "playing";
+          draft.position = position;
+          draft.startedAt = Date.now();
+        });
+      };
+
+      const onPause = () => {
+        const position = audio.currentTime;
+        audio.pause();
+        setData((draft) => {
+          draft.state = "paused";
+          draft.position = position;
+          draft.startedAt = 0;
+        });
+      };
+
+      const onStop = () => {
+        audio.pause();
+        seekIfNeeded(0, true);
+        setData((draft) => {
+          draft.state = "stopped";
+          draft.position = 0;
+          draft.startedAt = 0;
+        });
+      };
+
+      const onVolume = () => {
+        const value = Number(volumeEl.value);
+        audio.volume = value;
+        setData((draft) => {
+          draft.volume = value;
+        });
+      };
+
+      const onEnded = () => {
+        setData((draft) => {
+          draft.state = "stopped";
+          draft.position = 0;
+          draft.startedAt = 0;
+        });
+      };
+
+      playButton.addEventListener("click", onPlay);
+      pauseButton.addEventListener("click", onPause);
+      stopButton.addEventListener("click", onStop);
+      volumeEl.addEventListener("input", onVolume);
+      audio.addEventListener("ended", onEnded);
+
+      // Periodically correct noticeable playback drift while shared state says
+      // the track is playing.
+      const driftTimer = setInterval(() => {
+        const data = getData();
+        if (data.state === "playing" && !audio.paused) {
+          seekIfNeeded(expectedPosition(data));
+        }
+      }, 2000);
+
+      return () => {
+        clearInterval(driftTimer);
+        playButton.removeEventListener("click", onPlay);
+        pauseButton.removeEventListener("click", onPause);
+        stopButton.removeEventListener("click", onStop);
+        volumeEl.removeEventListener("input", onVolume);
+        audio.removeEventListener("ended", onEnded);
+      };
+    };
+
+    await playhtml.init();
+  </script>
+</body>
+</html>
