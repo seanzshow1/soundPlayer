@@ -3,37 +3,60 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Shared MP3 Player</title>
+  <title>PlayHTML Remote MP3 Player</title>
   <style>
-    :root { font-family: system-ui, sans-serif; color-scheme: light; }
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #171717;
+      background: #f3f3f3;
+    }
     * { box-sizing: border-box; }
     body {
       min-height: 100vh;
       margin: 0;
       display: grid;
       place-items: center;
-      padding: 16px;
-      background: #f5f5f5;
+      padding: 18px;
     }
     .player {
-      width: min(600px, 100%);
+      width: min(620px, 100%);
       padding: 24px;
-      background: white;
-      border: 1px solid #d8d8d8;
-      border-radius: 14px;
-      box-shadow: 0 8px 30px rgba(0,0,0,.08);
+      background: #fff;
+      border: 1px solid #d5d5d5;
+      border-radius: 16px;
+      box-shadow: 0 10px 32px rgba(0,0,0,.08);
     }
-    h1 { margin: 0 0 8px; font-size: 1.35rem; }
-    .status { margin: 0 0 18px; color: #555; min-height: 1.4em; }
-
+    .topline {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0; font-size: 1.35rem; }
+    .mode {
+      flex: 0 0 auto;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: #ececec;
+      font-size: .78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .status {
+      margin: 6px 0 0;
+      color: #555;
+      line-height: 1.45;
+    }
     .drop-zone {
       display: grid;
+      min-height: 145px;
       place-items: center;
-      min-height: 150px;
       padding: 22px;
-      margin-bottom: 20px;
+      margin-bottom: 14px;
       text-align: center;
-      border: 2px dashed #aaa;
+      border: 2px dashed #9c9c9c;
       border-radius: 12px;
       background: #fafafa;
       cursor: pointer;
@@ -41,12 +64,13 @@
     }
     .drop-zone:hover,
     .drop-zone.is-dragging {
-      border-color: #333;
+      border-color: #222;
       background: #f0f0f0;
     }
     .drop-zone strong { display: block; margin-bottom: 6px; }
     .drop-zone small { color: #666; }
     .file-name {
+      display: block;
       margin-top: 10px;
       font-size: .9rem;
       overflow-wrap: anywhere;
@@ -62,283 +86,471 @@
       white-space: nowrap;
       border: 0;
     }
-
-    .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    button {
+    .host-tools {
+      margin-bottom: 20px;
+    }
+    .host-tools p {
+      margin: 8px 0 0;
+      color: #666;
+      font-size: .88rem;
+      line-height: 1.4;
+    }
+    .track {
+      margin: 0 0 18px;
+      padding: 12px 14px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fafafa;
+      overflow-wrap: anywhere;
+    }
+    .track strong { display: block; margin-bottom: 3px; font-size: .82rem; color: #666; }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    button, .mode-link {
       font: inherit;
+    }
+    button {
       padding: 10px 16px;
-      border: 1px solid #bbb;
+      border: 1px solid #aaa;
       border-radius: 9px;
       background: #fff;
       cursor: pointer;
     }
-    button:hover:not(:disabled) { background: #f2f2f2; }
-    button:disabled { opacity: .45; cursor: not-allowed; }
-
+    button:hover:not(:disabled) { background: #f0f0f0; }
+    button:disabled { opacity: .42; cursor: not-allowed; }
+    .primary {
+      border-color: #222;
+      background: #222;
+      color: #fff;
+    }
+    .primary:hover:not(:disabled) { background: #444; }
     .volume {
-      display: flex;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) 3.5rem;
       gap: 10px;
       align-items: center;
       margin-top: 18px;
     }
-    .volume input { flex: 1; min-width: 0; }
-    .note { margin: 20px 0 0; font-size: .88rem; color: #666; line-height: 1.45; }
+    .volume output { text-align: right; font-variant-numeric: tabular-nums; }
+    .mode-links {
+      display: flex;
+      gap: 10px;
+      margin-top: 22px;
+      padding-top: 18px;
+      border-top: 1px solid #e4e4e4;
+    }
+    .mode-link {
+      color: inherit;
+      font-size: .88rem;
+    }
+    .note {
+      margin: 16px 0 0;
+      color: #666;
+      font-size: .86rem;
+      line-height: 1.45;
+    }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
-  <main id="shared-audio-player" class="player" can-play shared>
-    <h1>Shared MP3 Player</h1>
-    <p class="status" data-status>Drop an MP3 to begin.</p>
+  <main id="shared-audio-player" class="player" can-play>
+    <div class="topline">
+      <div>
+        <h1>Remote MP3 Player</h1>
+        <p class="status" data-status role="status">Connecting…</p>
+      </div>
+      <span class="mode" data-mode-label></span>
+    </div>
 
-    <label class="drop-zone" data-drop-zone>
-      <input class="file-input" data-file-input type="file" accept="audio/mpeg,.mp3" />
-      <span>
-        <strong>Drop an MP3 here</strong>
-        <small>or click this area to choose a file</small>
-        <span class="file-name" data-file-name>No MP3 loaded</span>
-      </span>
-    </label>
+    <section data-player-only hidden>
+      <label class="drop-zone" data-drop-zone>
+        <input class="file-input" data-file-input type="file" accept="audio/mpeg,.mp3" />
+        <span>
+          <strong>Drop the MP3 here</strong>
+          <small>or click to choose it</small>
+          <span class="file-name" data-file-name>No MP3 loaded</span>
+        </span>
+      </label>
 
-    <audio data-audio preload="metadata"></audio>
+      <div class="host-tools">
+        <button class="primary" type="button" data-enable-audio disabled>Enable remote playback</button>
+        <p>Load the MP3, then press this once on the Player device. Leave this page open.</p>
+      </div>
+    </section>
+
+    <div class="track">
+      <strong>Loaded track</strong>
+      <span data-track-name>None</span>
+    </div>
 
     <div class="controls" aria-label="Audio controls">
-      <button type="button" data-action="play" disabled>Play</button>
+      <button class="primary" type="button" data-action="play" disabled>Play</button>
       <button type="button" data-action="pause" disabled>Pause</button>
       <button type="button" data-action="stop" disabled>Stop</button>
     </div>
 
     <label class="volume">
       <span>Volume</span>
-      <input data-volume type="range" min="0" max="1" step="0.01" value="0.8" />
+      <input data-volume type="range" min="0" max="1" step="0.01" value="0.8" disabled />
       <output data-volume-output>80%</output>
     </label>
 
-    <p class="note">
-      Play, pause, stop and volume are synchronised through PlayHTML. The dropped MP3 itself stays local to this browser.
+    <p class="note" data-remote-note hidden>
+      This page sends commands only. The MP3 stays on the Player device and the sound comes from that device.
     </p>
+
+    <nav class="mode-links" aria-label="Player mode">
+      <a class="mode-link" href="?mode=player">Open as Player</a>
+      <a class="mode-link" href="?mode=remote">Open as Remote</a>
+    </nav>
   </main>
 
   <script type="module">
     import { playhtml } from "https://unpkg.com/playhtml";
 
+    // Both ?mode=player and ?mode=remote must join the same room.
+    const ROOM = "remote-mp3-player-v1";
+    const params = new URLSearchParams(window.location.search);
+    const isRemote = params.get("mode") === "remote";
+
     const root = document.getElementById("shared-audio-player");
-    const audio = root.querySelector("[data-audio]");
     const statusEl = root.querySelector("[data-status]");
+    const modeLabel = root.querySelector("[data-mode-label]");
+    const playerOnly = root.querySelector("[data-player-only]");
+    const remoteNote = root.querySelector("[data-remote-note]");
     const dropZone = root.querySelector("[data-drop-zone]");
     const fileInput = root.querySelector("[data-file-input]");
     const fileNameEl = root.querySelector("[data-file-name]");
+    const enableAudioButton = root.querySelector("[data-enable-audio]");
+    const trackNameEl = root.querySelector("[data-track-name]");
     const volumeEl = root.querySelector("[data-volume]");
     const volumeOutput = root.querySelector("[data-volume-output]");
     const playButton = root.querySelector('[data-action="play"]');
     const pauseButton = root.querySelector('[data-action="pause"]');
     const stopButton = root.querySelector('[data-action="stop"]');
 
-    let currentObjectUrl = null;
-    let localTrackKey = "";
+    modeLabel.textContent = isRemote ? "Remote" : "Player";
+    playerOnly.hidden = isRemote;
+    remoteNote.hidden = !isRemote;
+
+    let audioContext = null;
+    let audioBuffer = null;
+    let gainNode = null;
+    let currentSource = null;
+    let currentSourceRevision = -1;
+    let currentSourceNaturalEnd = false;
+    let localTrackName = "";
+    let hostArmed = false;
+    let latestSharedData = null;
+    let latestSetData = null;
+    let hostOnline = false;
 
     root.defaultData = {
       state: "stopped",
       position: 0,
       startedAt: 0,
       volume: 0.8,
-      trackKey: "",
-      trackName: ""
+      trackName: "",
+      revision: 0
     };
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
 
     function expectedPosition(data) {
-      if (data.state !== "playing" || !data.startedAt) return data.position || 0;
-      return Math.max(0, (data.position || 0) + (Date.now() - data.startedAt) / 1000);
-    }
-
-    function seekIfNeeded(target, force = false) {
-      if (!Number.isFinite(target) || !audio.src) return;
-      const apply = () => {
-        try {
-          if (force || Math.abs(audio.currentTime - target) > 0.75) {
-            audio.currentTime = Math.max(0, target);
-          }
-        } catch (_) {}
-      };
-      if (audio.readyState >= 1) apply();
-      else audio.addEventListener("loadedmetadata", apply, { once: true });
-    }
-
-    function setControlsEnabled(enabled) {
-      playButton.disabled = !enabled;
-      pauseButton.disabled = !enabled;
-      stopButton.disabled = !enabled;
-    }
-
-    function makeTrackKey(file) {
-      return `${file.name}|${file.size}|${file.lastModified}`;
-    }
-
-    function loadLocalFile(file, setData) {
-      if (!file) return;
-      const looksLikeMp3 = file.type === "audio/mpeg" || file.name.toLowerCase().endsWith(".mp3");
-      if (!looksLikeMp3) {
-        statusEl.textContent = "Please choose an MP3 file.";
-        return;
+      if (data.state !== "playing" || !data.startedAt) {
+        return Number(data.position || 0);
       }
-
-      audio.pause();
-      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-
-      currentObjectUrl = URL.createObjectURL(file);
-      localTrackKey = makeTrackKey(file);
-      audio.src = currentObjectUrl;
-      audio.load();
-
-      fileNameEl.textContent = file.name;
-      setControlsEnabled(true);
-      statusEl.textContent = "MP3 loaded. Ready to play.";
-
-      setData((draft) => {
-        draft.trackKey = localTrackKey;
-        draft.trackName = file.name;
-        draft.state = "stopped";
-        draft.position = 0;
-        draft.startedAt = 0;
-      });
+      return Math.max(0, Number(data.position || 0) + (Date.now() - data.startedAt) / 1000);
     }
 
-    root.updateElement = ({ data }) => {
-      const target = expectedPosition(data);
+    function stopLocalSource() {
+      if (!currentSource) return;
+      currentSourceNaturalEnd = false;
+      try { currentSource.stop(); } catch (_) {}
+      try { currentSource.disconnect(); } catch (_) {}
+      currentSource = null;
+    }
 
-      audio.volume = Math.min(1, Math.max(0, Number(data.volume ?? 0.8)));
-      volumeEl.value = String(audio.volume);
-      volumeOutput.value = `${Math.round(audio.volume * 100)}%`;
+    function applyHostTransport(data, setData) {
+      if (isRemote || !hostArmed || !audioBuffer || !audioContext || !gainNode) return;
 
-      if (data.trackKey && data.trackKey !== localTrackKey) {
-        audio.pause();
-        statusEl.textContent = data.trackName
-          ? `Shared track is “${data.trackName}”. Drop the same MP3 on this page to join playback.`
-          : "Another page selected an MP3. Drop the same file here to join playback.";
-        return;
-      }
+      gainNode.gain.value = clamp(Number(data.volume ?? 0.8), 0, 1);
 
-      if (!audio.src) return;
+      if (Number(data.revision) === currentSourceRevision) return;
+      currentSourceRevision = Number(data.revision);
+      stopLocalSource();
 
-      if (data.state === "playing") {
-        seekIfNeeded(target);
-        audio.play().then(() => {
-          statusEl.textContent = "Playing";
-        }).catch(() => {
-          statusEl.textContent = "Playback is synchronised, but this browser blocked autoplay. Press Play once on this device.";
-        });
-      } else if (data.state === "paused") {
-        audio.pause();
-        seekIfNeeded(data.position || 0, true);
-        statusEl.textContent = "Paused";
-      } else {
-        audio.pause();
-        seekIfNeeded(0, true);
-        statusEl.textContent = "Stopped";
-      }
-    };
+      if (data.state !== "playing") return;
 
-    root.onMount = ({ getData, setData }) => {
-      const onPlay = () => {
-        if (!audio.src) return;
-        const data = getData();
-        const position = data.state === "stopped" ? 0 : audio.currentTime;
-
-        seekIfNeeded(position, true);
-        audio.play().catch(() => {});
-
-        setData((draft) => {
-          draft.state = "playing";
-          draft.position = position;
-          draft.startedAt = Date.now();
-        });
-      };
-
-      const onPause = () => {
-        if (!audio.src) return;
-        const position = audio.currentTime;
-        audio.pause();
-        setData((draft) => {
-          draft.state = "paused";
-          draft.position = position;
-          draft.startedAt = 0;
-        });
-      };
-
-      const onStop = () => {
-        if (!audio.src) return;
-        audio.pause();
-        seekIfNeeded(0, true);
+      const offset = expectedPosition(data);
+      if (offset >= audioBuffer.duration) {
         setData((draft) => {
           draft.state = "stopped";
           draft.position = 0;
           draft.startedAt = 0;
+          draft.revision += 1;
+        });
+        return;
+      }
+
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(gainNode);
+      currentSource = source;
+      currentSourceNaturalEnd = true;
+
+      source.addEventListener("ended", () => {
+        const endedNaturally = currentSource === source && currentSourceNaturalEnd;
+        if (currentSource === source) currentSource = null;
+        if (!endedNaturally) return;
+
+        const current = latestSharedData;
+        if (current?.state === "playing" && Number(current.revision) === currentSourceRevision) {
+          setData((draft) => {
+            draft.state = "stopped";
+            draft.position = 0;
+            draft.startedAt = 0;
+            draft.revision += 1;
+          });
+        }
+      });
+
+      source.start(0, offset);
+    }
+
+    function setSharedControlsEnabled(enabled) {
+      playButton.disabled = !enabled;
+      pauseButton.disabled = !enabled;
+      stopButton.disabled = !enabled;
+      volumeEl.disabled = !enabled;
+    }
+
+    function renderHostPresence() {
+      const presences = playhtml.presence.getPresences();
+      hostOnline = false;
+
+      for (const [, presence] of presences) {
+        if (presence.audioHost?.ready) {
+          hostOnline = true;
+          break;
+        }
+      }
+
+      if (isRemote) {
+        setSharedControlsEnabled(hostOnline);
+        if (!hostOnline) {
+          statusEl.textContent = "Waiting for the Player device to load and enable its MP3.";
+        } else if (latestSharedData) {
+          statusEl.textContent = latestSharedData.state === "playing"
+            ? "Player is playing."
+            : latestSharedData.state === "paused"
+              ? "Player is paused."
+              : "Player is ready.";
+        }
+      }
+    }
+
+    async function loadLocalFile(file, setData) {
+      if (isRemote || !file) return;
+
+      const looksLikeMp3 = file.type === "audio/mpeg" || file.name.toLowerCase().endsWith(".mp3");
+      if (!looksLikeMp3) {
+        statusEl.textContent = "Choose an MP3 file.";
+        return;
+      }
+
+      stopLocalSource();
+      hostArmed = false;
+      enableAudioButton.disabled = true;
+      setSharedControlsEnabled(false);
+      playhtml.presence.setMyPresence("audioHost", { ready: false, trackName: file.name });
+
+      statusEl.textContent = "Loading MP3…";
+      fileNameEl.textContent = file.name;
+
+      try {
+        if (!audioContext) {
+          audioContext = new AudioContext();
+          gainNode = audioContext.createGain();
+          gainNode.connect(audioContext.destination);
+        }
+
+        const bytes = await file.arrayBuffer();
+        audioBuffer = await audioContext.decodeAudioData(bytes.slice(0));
+        localTrackName = file.name;
+
+        setData((draft) => {
+          draft.trackName = file.name;
+          draft.state = "stopped";
+          draft.position = 0;
+          draft.startedAt = 0;
+          draft.revision += 1;
+        });
+
+        enableAudioButton.disabled = false;
+        statusEl.textContent = "MP3 loaded. Press “Enable remote playback” once.";
+      } catch (error) {
+        console.error(error);
+        audioBuffer = null;
+        localTrackName = "";
+        fileNameEl.textContent = "No MP3 loaded";
+        statusEl.textContent = "This MP3 could not be decoded by the browser.";
+      }
+    }
+
+    async function enableRemotePlayback() {
+      if (isRemote || !audioContext || !audioBuffer) return;
+
+      try {
+        await audioContext.resume();
+        hostArmed = audioContext.state === "running";
+
+        if (!hostArmed) {
+          statusEl.textContent = "Audio is still blocked. Press Enable remote playback again.";
+          return;
+        }
+
+        enableAudioButton.textContent = "Remote playback enabled";
+        enableAudioButton.disabled = true;
+        setSharedControlsEnabled(true);
+        playhtml.presence.setMyPresence("audioHost", { ready: true, trackName: localTrackName });
+        statusEl.textContent = "Player ready. You can now control it from the Remote page.";
+
+        if (latestSharedData && latestSetData) {
+          applyHostTransport(latestSharedData, latestSetData);
+        }
+      } catch (error) {
+        console.error(error);
+        statusEl.textContent = "The browser did not enable audio.";
+      }
+    }
+
+    root.updateElement = ({ data, setData }) => {
+      latestSharedData = data;
+      latestSetData = setData;
+
+      trackNameEl.textContent = data.trackName || "None";
+      const volume = clamp(Number(data.volume ?? 0.8), 0, 1);
+      volumeEl.value = String(volume);
+      volumeOutput.value = `${Math.round(volume * 100)}%`;
+
+      applyHostTransport(data, setData);
+
+      if (isRemote) {
+        renderHostPresence();
+      } else if (hostArmed) {
+        statusEl.textContent = data.state === "playing"
+          ? "Playing from this device."
+          : data.state === "paused"
+            ? "Paused. Remote control remains connected."
+            : "Player ready. Remote control remains connected.";
+      }
+    };
+
+    root.onMount = ({ getData, setData }) => {
+      latestSetData = setData;
+
+      const sendPlay = () => {
+        const data = getData();
+        const position = data.state === "stopped" ? 0 : expectedPosition(data);
+        setData((draft) => {
+          draft.state = "playing";
+          draft.position = position;
+          draft.startedAt = Date.now();
+          draft.revision += 1;
         });
       };
 
-      const onVolume = () => {
-        const value = Number(volumeEl.value);
-        audio.volume = value;
+      const sendPause = () => {
+        const data = getData();
+        const position = expectedPosition(data);
+        setData((draft) => {
+          draft.state = "paused";
+          draft.position = position;
+          draft.startedAt = 0;
+          draft.revision += 1;
+        });
+      };
+
+      const sendStop = () => {
+        setData((draft) => {
+          draft.state = "stopped";
+          draft.position = 0;
+          draft.startedAt = 0;
+          draft.revision += 1;
+        });
+      };
+
+      const sendVolume = () => {
+        const value = clamp(Number(volumeEl.value), 0, 1);
         setData((draft) => {
           draft.volume = value;
         });
       };
 
-      const onEnded = () => {
-        setData((draft) => {
-          draft.state = "stopped";
-          draft.position = 0;
-          draft.startedAt = 0;
-        });
-      };
+      playButton.addEventListener("click", sendPlay);
+      pauseButton.addEventListener("click", sendPause);
+      stopButton.addEventListener("click", sendStop);
+      volumeEl.addEventListener("input", sendVolume);
 
-      const onFileChange = () => loadLocalFile(fileInput.files?.[0], setData);
-      const onDragOver = (event) => {
-        event.preventDefault();
-        dropZone.classList.add("is-dragging");
-      };
-      const onDragLeave = () => dropZone.classList.remove("is-dragging");
-      const onDrop = (event) => {
-        event.preventDefault();
-        dropZone.classList.remove("is-dragging");
-        loadLocalFile(event.dataTransfer?.files?.[0], setData);
-      };
+      if (!isRemote) {
+        const onFileChange = () => loadLocalFile(fileInput.files?.[0], setData);
+        const onDragOver = (event) => {
+          event.preventDefault();
+          dropZone.classList.add("is-dragging");
+        };
+        const onDragLeave = () => dropZone.classList.remove("is-dragging");
+        const onDrop = (event) => {
+          event.preventDefault();
+          dropZone.classList.remove("is-dragging");
+          loadLocalFile(event.dataTransfer?.files?.[0], setData);
+        };
 
-      playButton.addEventListener("click", onPlay);
-      pauseButton.addEventListener("click", onPause);
-      stopButton.addEventListener("click", onStop);
-      volumeEl.addEventListener("input", onVolume);
-      audio.addEventListener("ended", onEnded);
-      fileInput.addEventListener("change", onFileChange);
-      dropZone.addEventListener("dragover", onDragOver);
-      dropZone.addEventListener("dragleave", onDragLeave);
-      dropZone.addEventListener("drop", onDrop);
+        fileInput.addEventListener("change", onFileChange);
+        dropZone.addEventListener("dragover", onDragOver);
+        dropZone.addEventListener("dragleave", onDragLeave);
+        dropZone.addEventListener("drop", onDrop);
+        enableAudioButton.addEventListener("click", enableRemotePlayback);
 
-      const driftTimer = setInterval(() => {
-        const data = getData();
-        if (data.state === "playing" && !audio.paused && data.trackKey === localTrackKey) {
-          seekIfNeeded(expectedPosition(data));
-        }
-      }, 2000);
+        return () => {
+          playButton.removeEventListener("click", sendPlay);
+          pauseButton.removeEventListener("click", sendPause);
+          stopButton.removeEventListener("click", sendStop);
+          volumeEl.removeEventListener("input", sendVolume);
+          fileInput.removeEventListener("change", onFileChange);
+          dropZone.removeEventListener("dragover", onDragOver);
+          dropZone.removeEventListener("dragleave", onDragLeave);
+          dropZone.removeEventListener("drop", onDrop);
+          enableAudioButton.removeEventListener("click", enableRemotePlayback);
+          playhtml.presence.setMyPresence("audioHost", null);
+        };
+      }
 
       return () => {
-        clearInterval(driftTimer);
-        playButton.removeEventListener("click", onPlay);
-        pauseButton.removeEventListener("click", onPause);
-        stopButton.removeEventListener("click", onStop);
-        volumeEl.removeEventListener("input", onVolume);
-        audio.removeEventListener("ended", onEnded);
-        fileInput.removeEventListener("change", onFileChange);
-        dropZone.removeEventListener("dragover", onDragOver);
-        dropZone.removeEventListener("dragleave", onDragLeave);
-        dropZone.removeEventListener("drop", onDrop);
+        playButton.removeEventListener("click", sendPlay);
+        pauseButton.removeEventListener("click", sendPause);
+        stopButton.removeEventListener("click", sendStop);
+        volumeEl.removeEventListener("input", sendVolume);
       };
     };
 
-    window.addEventListener("beforeunload", () => {
-      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-    });
+    await playhtml.init({ room: ROOM });
 
-    await playhtml.init();
+    if (isRemote) {
+      playhtml.presence.setMyPresence("audioHost", null);
+      const unsubscribe = playhtml.presence.onPresenceChange("audioHost", renderHostPresence);
+      renderHostPresence();
+      window.addEventListener("beforeunload", unsubscribe, { once: true });
+    } else {
+      playhtml.presence.setMyPresence("audioHost", { ready: false, trackName: "" });
+      statusEl.textContent = "Drop an MP3 to begin.";
+    }
   </script>
 </body>
 </html>
