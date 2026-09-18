@@ -104,6 +104,53 @@
       overflow-wrap: anywhere;
     }
     .track strong { display: block; margin-bottom: 3px; font-size: .82rem; color: #666; }
+    .playlist {
+      margin: 0 0 18px;
+      padding: 12px 14px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fafafa;
+    }
+    .playlist-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .playlist-header strong { font-size: .82rem; color: #666; }
+    .playlist-header span { font-size: .78rem; color: #888; }
+    .playlist-items {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 220px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .playlist-item-button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      cursor: pointer;
+      overflow-wrap: anywhere;
+    }
+    .playlist-item-button:hover:not(:disabled) { background: #eee; }
+    .playlist-item.is-current .playlist-item-button {
+      border-color: #222;
+      background: #fff;
+      font-weight: 600;
+    }
+    .playlist-empty {
+      margin: 0;
+      color: #888;
+      font-size: .85rem;
+    }
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -160,7 +207,7 @@
   <main id="shared-audio-player" class="player" can-play>
     <div class="topline">
       <div>
-        <h1>Remote MP3 Player</h1>
+        <h1>Remote MP3 Playlist Player</h1>
         <p class="status" data-status role="status">Connecting…</p>
       </div>
       <span class="mode" data-mode-label></span>
@@ -168,29 +215,41 @@
 
     <section data-player-only hidden>
       <label class="drop-zone" data-drop-zone>
-        <input class="file-input" data-file-input type="file" accept="audio/mpeg,.mp3" />
+        <input class="file-input" data-file-input type="file" accept="audio/mpeg,.mp3" multiple />
         <span>
-          <strong>Drop the MP3 here</strong>
-          <small>or click to choose it</small>
-          <span class="file-name" data-file-name>No MP3 loaded</span>
+          <strong>Drop MP3s here</strong>
+          <small>or click to choose them</small>
+          <span class="file-name" data-file-name>No MP3s loaded</span>
         </span>
       </label>
 
       <div class="host-tools">
         <button class="primary" type="button" data-enable-audio disabled>Enable remote playback</button>
-        <p>Load the MP3, then press this once on the Player device. Leave this page open.</p>
+        <p>Load one or more MP3s, then press this once on the Player device. Leave this page open. You can add more MP3s to the playlist later too.</p>
       </div>
     </section>
 
+    <section class="playlist" aria-label="Playlist">
+      <div class="playlist-header">
+        <strong>Playlist</strong>
+        <span data-playlist-count></span>
+      </div>
+      <ol class="playlist-items" data-playlist-list></ol>
+      <p class="playlist-empty" data-playlist-empty>No tracks yet.</p>
+    </section>
+
     <div class="track">
-      <strong>Loaded track</strong>
+      <strong>Now playing</strong>
       <span data-track-name>None</span>
     </div>
 
     <div class="controls" aria-label="Audio controls">
+      <button type="button" data-action="previous" disabled>Previous</button>
+      <button type="button" data-action="restart" disabled>Restart</button>
       <button class="primary" type="button" data-action="play" disabled>Play</button>
       <button type="button" data-action="pause" disabled>Pause</button>
       <button type="button" data-action="stop" disabled>Stop</button>
+      <button type="button" data-action="next" disabled>Next</button>
     </div>
 
     <label class="volume">
@@ -200,7 +259,7 @@
     </label>
 
     <p class="note" data-remote-note hidden>
-      This page sends commands only. The MP3 stays on the Player device and the sound comes from that device.
+      This page sends commands only. The audio files stay on the Player device and the sound comes from that device.
     </p>
 
     <nav class="mode-links" aria-label="Player mode">
@@ -229,21 +288,27 @@
     const trackNameEl = root.querySelector("[data-track-name]");
     const volumeEl = root.querySelector("[data-volume]");
     const volumeOutput = root.querySelector("[data-volume-output]");
+    const playlistListEl = root.querySelector("[data-playlist-list]");
+    const playlistEmptyEl = root.querySelector("[data-playlist-empty]");
+    const playlistCountEl = root.querySelector("[data-playlist-count]");
+    const previousButton = root.querySelector('[data-action="previous"]');
+    const restartButton = root.querySelector('[data-action="restart"]');
     const playButton = root.querySelector('[data-action="play"]');
     const pauseButton = root.querySelector('[data-action="pause"]');
     const stopButton = root.querySelector('[data-action="stop"]');
+    const nextButton = root.querySelector('[data-action="next"]');
 
     modeLabel.textContent = isRemote ? "Remote" : "Player";
     playerOnly.hidden = isRemote;
     remoteNote.hidden = !isRemote;
 
     let audioContext = null;
-    let audioBuffer = null;
     let gainNode = null;
+    // Decoded audio lives only on this device, indexed the same way as the shared playlist.
+    let audioBuffers = [];
     let currentSource = null;
     let currentSourceRevision = -1;
     let currentSourceNaturalEnd = false;
-    let localTrackName = "";
     let hostArmed = false;
     let latestSharedData = null;
     let latestSetData = null;
@@ -254,7 +319,8 @@
       position: 0,
       startedAt: 0,
       volume: 0.8,
-      trackName: "",
+      playlist: [],
+      currentTrackIndex: -1,
       revision: 0
     };
 
@@ -277,8 +343,29 @@
       currentSource = null;
     }
 
+    function advanceOrStop(data, setData) {
+      const playlist = data.playlist || [];
+      const nextIndex = data.currentTrackIndex + 1;
+      if (nextIndex < playlist.length) {
+        setData((draft) => {
+          draft.currentTrackIndex = nextIndex;
+          draft.state = "playing";
+          draft.position = 0;
+          draft.startedAt = Date.now();
+          draft.revision += 1;
+        });
+      } else {
+        setData((draft) => {
+          draft.state = "stopped";
+          draft.position = 0;
+          draft.startedAt = 0;
+          draft.revision += 1;
+        });
+      }
+    }
+
     function applyHostTransport(data, setData) {
-      if (isRemote || !hostArmed || !audioBuffer || !audioContext || !gainNode) return;
+      if (isRemote || !hostArmed || !audioContext || !gainNode) return;
 
       gainNode.gain.value = clamp(Number(data.volume ?? 0.8), 0, 1);
 
@@ -288,19 +375,20 @@
 
       if (data.state !== "playing") return;
 
+      const buffer = audioBuffers[data.currentTrackIndex];
+      if (!buffer) {
+        statusEl.textContent = "This track has not been loaded on this device yet.";
+        return;
+      }
+
       const offset = expectedPosition(data);
-      if (offset >= audioBuffer.duration) {
-        setData((draft) => {
-          draft.state = "stopped";
-          draft.position = 0;
-          draft.startedAt = 0;
-          draft.revision += 1;
-        });
+      if (offset >= buffer.duration) {
+        advanceOrStop(data, setData);
         return;
       }
 
       const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
+      source.buffer = buffer;
       source.connect(gainNode);
       currentSource = source;
       currentSourceNaturalEnd = true;
@@ -312,23 +400,52 @@
 
         const current = latestSharedData;
         if (current?.state === "playing" && Number(current.revision) === currentSourceRevision) {
-          setData((draft) => {
-            draft.state = "stopped";
-            draft.position = 0;
-            draft.startedAt = 0;
-            draft.revision += 1;
-          });
+          advanceOrStop(current, setData);
         }
       });
 
       source.start(0, offset);
     }
 
-    function setSharedControlsEnabled(enabled) {
-      playButton.disabled = !enabled;
-      pauseButton.disabled = !enabled;
-      stopButton.disabled = !enabled;
-      volumeEl.disabled = !enabled;
+    function setSharedControlsEnabled(enabledBase) {
+      const data = latestSharedData;
+      const playlistLength = data?.playlist?.length || 0;
+      const index = data?.currentTrackIndex ?? -1;
+      const hasTrack = Boolean(enabledBase) && playlistLength > 0 && index >= 0;
+
+      playButton.disabled = !hasTrack;
+      pauseButton.disabled = !hasTrack;
+      stopButton.disabled = !hasTrack;
+      restartButton.disabled = !hasTrack;
+      previousButton.disabled = !hasTrack || index <= 0;
+      nextButton.disabled = !hasTrack || index >= playlistLength - 1;
+      volumeEl.disabled = !enabledBase;
+    }
+
+    function renderPlaylist(data) {
+      const playlist = data.playlist || [];
+      const enabledNow = isRemote ? hostOnline : hostArmed;
+
+      playlistEmptyEl.hidden = playlist.length > 0;
+      playlistCountEl.textContent = playlist.length
+        ? `${playlist.length} track${playlist.length === 1 ? "" : "s"}`
+        : "";
+
+      playlistListEl.innerHTML = "";
+      playlist.forEach((name, index) => {
+        const li = document.createElement("li");
+        li.className = "playlist-item" + (index === data.currentTrackIndex ? " is-current" : "");
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "playlist-item-button";
+        button.textContent = `${index + 1}. ${name}`;
+        button.dataset.index = String(index);
+        button.disabled = !enabledNow;
+
+        li.appendChild(button);
+        playlistListEl.appendChild(li);
+      });
     }
 
     function renderHostPresence() {
@@ -345,7 +462,7 @@
       if (isRemote) {
         setSharedControlsEnabled(hostOnline);
         if (!hostOnline) {
-          statusEl.textContent = "Waiting for the Player device to load and enable its MP3.";
+          statusEl.textContent = "Waiting for the Player device to load and enable its playlist.";
         } else if (latestSharedData) {
           statusEl.textContent = latestSharedData.state === "playing"
             ? "Player is playing."
@@ -356,56 +473,57 @@
       }
     }
 
-    async function loadLocalFile(file, setData) {
-      if (isRemote || !file) return;
+    async function addFilesToPlaylist(fileList, setData) {
+      if (isRemote) return;
 
-      const looksLikeMp3 = file.type === "audio/mpeg" || file.name.toLowerCase().endsWith(".mp3");
-      if (!looksLikeMp3) {
-        statusEl.textContent = "Choose an MP3 file.";
+      const files = Array.from(fileList || []).filter((file) => {
+        return file.type === "audio/mpeg" || file.name.toLowerCase().endsWith(".mp3");
+      });
+
+      if (!files.length) {
+        statusEl.textContent = "Choose one or more MP3 files.";
         return;
       }
 
-      stopLocalSource();
-      hostArmed = false;
-      enableAudioButton.disabled = true;
-      setSharedControlsEnabled(false);
-      playhtml.presence.setMyPresence("audioHost", { ready: false, trackName: file.name });
-
-      statusEl.textContent = "Loading MP3…";
-      fileNameEl.textContent = file.name;
-
-      try {
-        if (!audioContext) {
-          audioContext = new AudioContext();
-          gainNode = audioContext.createGain();
-          gainNode.connect(audioContext.destination);
-        }
-
-        const bytes = await file.arrayBuffer();
-        audioBuffer = await audioContext.decodeAudioData(bytes.slice(0));
-        localTrackName = file.name;
-
-        setData((draft) => {
-          draft.trackName = file.name;
-          draft.state = "stopped";
-          draft.position = 0;
-          draft.startedAt = 0;
-          draft.revision += 1;
-        });
-
-        enableAudioButton.disabled = false;
-        statusEl.textContent = "MP3 loaded. Press “Enable remote playback” once.";
-      } catch (error) {
-        console.error(error);
-        audioBuffer = null;
-        localTrackName = "";
-        fileNameEl.textContent = "No MP3 loaded";
-        statusEl.textContent = "This MP3 could not be decoded by the browser.";
+      if (!audioContext) {
+        audioContext = new AudioContext();
+        gainNode = audioContext.createGain();
+        gainNode.connect(audioContext.destination);
       }
+
+      statusEl.textContent = files.length === 1 ? "Loading MP3…" : `Loading ${files.length} MP3s…`;
+
+      for (const file of files) {
+        try {
+          const bytes = await file.arrayBuffer();
+          const buffer = await audioContext.decodeAudioData(bytes.slice(0));
+          audioBuffers.push(buffer);
+
+          setData((draft) => {
+            draft.playlist.push(file.name);
+            if (draft.currentTrackIndex < 0) {
+              draft.currentTrackIndex = 0;
+            }
+          });
+        } catch (error) {
+          console.error(error);
+          statusEl.textContent = `"${file.name}" could not be decoded by the browser.`;
+        }
+      }
+
+      fileNameEl.textContent = `${audioBuffers.length} track${audioBuffers.length === 1 ? "" : "s"} loaded`;
+
+      if (audioBuffers.length && enableAudioButton.textContent !== "Remote playback enabled") {
+        enableAudioButton.disabled = false;
+      }
+
+      statusEl.textContent = hostArmed
+        ? "Playlist updated."
+        : "MP3s loaded. Press “Enable remote playback” once.";
     }
 
     async function enableRemotePlayback() {
-      if (isRemote || !audioContext || !audioBuffer) return;
+      if (isRemote || !audioContext || !audioBuffers.length) return;
 
       try {
         await audioContext.resume();
@@ -419,7 +537,7 @@
         enableAudioButton.textContent = "Remote playback enabled";
         enableAudioButton.disabled = true;
         setSharedControlsEnabled(true);
-        playhtml.presence.setMyPresence("audioHost", { ready: true, trackName: localTrackName });
+        playhtml.presence.setMyPresence("audioHost", { ready: true });
         statusEl.textContent = "Player ready. You can now control it from the Remote page.";
 
         if (latestSharedData && latestSetData) {
@@ -435,22 +553,29 @@
       latestSharedData = data;
       latestSetData = setData;
 
-      trackNameEl.textContent = data.trackName || "None";
       const volume = clamp(Number(data.volume ?? 0.8), 0, 1);
       volumeEl.value = String(volume);
       volumeOutput.value = `${Math.round(volume * 100)}%`;
+
+      const currentName = data.playlist?.[data.currentTrackIndex];
+      trackNameEl.textContent = currentName || "None";
 
       applyHostTransport(data, setData);
 
       if (isRemote) {
         renderHostPresence();
-      } else if (hostArmed) {
-        statusEl.textContent = data.state === "playing"
-          ? "Playing from this device."
-          : data.state === "paused"
-            ? "Paused. Remote control remains connected."
-            : "Player ready. Remote control remains connected.";
+      } else {
+        setSharedControlsEnabled(hostArmed);
+        if (hostArmed) {
+          statusEl.textContent = data.state === "playing"
+            ? "Playing from this device."
+            : data.state === "paused"
+              ? "Paused. Remote control remains connected."
+              : "Player ready. Remote control remains connected.";
+        }
       }
+
+      renderPlaylist(data);
     };
 
     root.onMount = ({ getData, setData }) => {
@@ -458,6 +583,7 @@
 
       const sendPlay = () => {
         const data = getData();
+        if (data.currentTrackIndex < 0) return;
         const position = data.state === "stopped" ? 0 : expectedPosition(data);
         setData((draft) => {
           draft.state = "playing";
@@ -487,6 +613,42 @@
         });
       };
 
+      const sendRestart = () => {
+        const data = getData();
+        if (data.currentTrackIndex < 0) return;
+        setData((draft) => {
+          draft.position = 0;
+          draft.startedAt = draft.state === "playing" ? Date.now() : 0;
+          draft.revision += 1;
+        });
+      };
+
+      const sendPrevious = () => {
+        const data = getData();
+        const index = data.currentTrackIndex - 1;
+        if (index < 0) return;
+        setData((draft) => {
+          draft.currentTrackIndex = index;
+          draft.state = "playing";
+          draft.position = 0;
+          draft.startedAt = Date.now();
+          draft.revision += 1;
+        });
+      };
+
+      const sendNext = () => {
+        const data = getData();
+        const index = data.currentTrackIndex + 1;
+        if (index >= (data.playlist?.length || 0)) return;
+        setData((draft) => {
+          draft.currentTrackIndex = index;
+          draft.state = "playing";
+          draft.position = 0;
+          draft.startedAt = Date.now();
+          draft.revision += 1;
+        });
+      };
+
       const sendVolume = () => {
         const value = clamp(Number(volumeEl.value), 0, 1);
         setData((draft) => {
@@ -494,13 +656,35 @@
         });
       };
 
+      const onPlaylistClick = (event) => {
+        const button = event.target.closest(".playlist-item-button");
+        if (!button || button.disabled) return;
+        const index = Number(button.dataset.index);
+        if (!Number.isInteger(index)) return;
+        setData((draft) => {
+          draft.currentTrackIndex = index;
+          draft.state = "playing";
+          draft.position = 0;
+          draft.startedAt = Date.now();
+          draft.revision += 1;
+        });
+      };
+
+      previousButton.addEventListener("click", sendPrevious);
+      restartButton.addEventListener("click", sendRestart);
       playButton.addEventListener("click", sendPlay);
       pauseButton.addEventListener("click", sendPause);
       stopButton.addEventListener("click", sendStop);
+      nextButton.addEventListener("click", sendNext);
       volumeEl.addEventListener("input", sendVolume);
+      playlistListEl.addEventListener("click", onPlaylistClick);
 
       if (!isRemote) {
-        const onFileChange = () => loadLocalFile(fileInput.files?.[0], setData);
+        const onFileChange = () => {
+          const files = fileInput.files;
+          addFilesToPlaylist(files, setData);
+          fileInput.value = "";
+        };
         const onDragOver = (event) => {
           event.preventDefault();
           dropZone.classList.add("is-dragging");
@@ -509,7 +693,7 @@
         const onDrop = (event) => {
           event.preventDefault();
           dropZone.classList.remove("is-dragging");
-          loadLocalFile(event.dataTransfer?.files?.[0], setData);
+          addFilesToPlaylist(event.dataTransfer?.files, setData);
         };
 
         fileInput.addEventListener("change", onFileChange);
@@ -519,10 +703,14 @@
         enableAudioButton.addEventListener("click", enableRemotePlayback);
 
         return () => {
+          previousButton.removeEventListener("click", sendPrevious);
+          restartButton.removeEventListener("click", sendRestart);
           playButton.removeEventListener("click", sendPlay);
           pauseButton.removeEventListener("click", sendPause);
           stopButton.removeEventListener("click", sendStop);
+          nextButton.removeEventListener("click", sendNext);
           volumeEl.removeEventListener("input", sendVolume);
+          playlistListEl.removeEventListener("click", onPlaylistClick);
           fileInput.removeEventListener("change", onFileChange);
           dropZone.removeEventListener("dragover", onDragOver);
           dropZone.removeEventListener("dragleave", onDragLeave);
@@ -533,10 +721,14 @@
       }
 
       return () => {
+        previousButton.removeEventListener("click", sendPrevious);
+        restartButton.removeEventListener("click", sendRestart);
         playButton.removeEventListener("click", sendPlay);
         pauseButton.removeEventListener("click", sendPause);
         stopButton.removeEventListener("click", sendStop);
+        nextButton.removeEventListener("click", sendNext);
         volumeEl.removeEventListener("input", sendVolume);
+        playlistListEl.removeEventListener("click", onPlaylistClick);
       };
     };
 
@@ -548,8 +740,8 @@
       renderHostPresence();
       window.addEventListener("beforeunload", unsubscribe, { once: true });
     } else {
-      playhtml.presence.setMyPresence("audioHost", { ready: false, trackName: "" });
-      statusEl.textContent = "Drop an MP3 to begin.";
+      playhtml.presence.setMyPresence("audioHost", { ready: false });
+      statusEl.textContent = "Drop MP3s to begin.";
     }
   </script>
 </body>
