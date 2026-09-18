@@ -272,7 +272,7 @@
     import { playhtml } from "https://unpkg.com/playhtml";
 
     // Both ?mode=player and ?mode=remote must join the same room.
-    const ROOM = "remote-mp3-player-v1";
+    const ROOM = "remote-mp3-player-v2"; // New room avoids the old incompatible shared state.
     const params = new URLSearchParams(window.location.search);
     const isRemote = params.get("mode") === "remote";
 
@@ -352,14 +352,14 @@
           draft.state = "playing";
           draft.position = 0;
           draft.startedAt = Date.now();
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       } else {
         setData((draft) => {
           draft.state = "stopped";
           draft.position = 0;
           draft.startedAt = 0;
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       }
     }
@@ -409,7 +409,7 @@
 
     function setSharedControlsEnabled(enabledBase) {
       const data = latestSharedData;
-      const playlistLength = data?.playlist?.length || 0;
+      const playlistLength = Array.isArray(data?.playlist) ? data.playlist.length : 0;
       const index = data?.currentTrackIndex ?? -1;
       const hasTrack = Boolean(enabledBase) && playlistLength > 0 && index >= 0;
 
@@ -423,7 +423,7 @@
     }
 
     function renderPlaylist(data) {
-      const playlist = data.playlist || [];
+      const playlist = Array.isArray(data.playlist) ? data.playlist : [];
       const enabledNow = isRemote ? hostOnline : hostArmed;
 
       playlistEmptyEl.hidden = playlist.length > 0;
@@ -500,10 +500,13 @@
           audioBuffers.push(buffer);
 
           setData((draft) => {
+            // Shared data may be missing fields even when defaultData defines them.
+            if (!Array.isArray(draft.playlist)) draft.playlist = [];
             draft.playlist.push(file.name);
-            if (draft.currentTrackIndex < 0) {
+            if (!Number.isInteger(draft.currentTrackIndex) || draft.currentTrackIndex < 0) {
               draft.currentTrackIndex = 0;
             }
+            if (!Number.isFinite(draft.revision)) draft.revision = 0;
           });
         } catch (error) {
           console.error(error);
@@ -557,7 +560,8 @@
       volumeEl.value = String(volume);
       volumeOutput.value = `${Math.round(volume * 100)}%`;
 
-      const currentName = data.playlist?.[data.currentTrackIndex];
+      const currentName = Array.isArray(data.playlist)
+        ? data.playlist[data.currentTrackIndex] : null;
       trackNameEl.textContent = currentName || "None";
 
       applyHostTransport(data, setData);
@@ -581,15 +585,33 @@
     root.onMount = ({ getData, setData }) => {
       latestSetData = setData;
 
+      if (!isRemote) {
+        // Audio buffers cannot survive a refresh. Clear stale shared track names
+        // so that the remote cannot select files which no longer exist locally.
+        audioBuffers = [];
+        stopLocalSource();
+        currentSourceRevision = -1;
+        hostArmed = false;
+        setData((draft) => {
+          draft.playlist = [];
+          draft.currentTrackIndex = -1;
+          draft.state = "stopped";
+          draft.position = 0;
+          draft.startedAt = 0;
+          draft.volume = Number.isFinite(draft.volume) ? clamp(draft.volume, 0, 1) : 0.8;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
+        });
+      }
+
       const sendPlay = () => {
         const data = getData();
-        if (data.currentTrackIndex < 0) return;
+        if (!Array.isArray(data.playlist) || !data.playlist[data.currentTrackIndex]) return;
         const position = data.state === "stopped" ? 0 : expectedPosition(data);
         setData((draft) => {
           draft.state = "playing";
           draft.position = position;
           draft.startedAt = Date.now();
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       };
 
@@ -600,7 +622,7 @@
           draft.state = "paused";
           draft.position = position;
           draft.startedAt = 0;
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       };
 
@@ -609,17 +631,17 @@
           draft.state = "stopped";
           draft.position = 0;
           draft.startedAt = 0;
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       };
 
       const sendRestart = () => {
         const data = getData();
-        if (data.currentTrackIndex < 0) return;
+        if (!Array.isArray(data.playlist) || !data.playlist[data.currentTrackIndex]) return;
         setData((draft) => {
           draft.position = 0;
           draft.startedAt = draft.state === "playing" ? Date.now() : 0;
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       };
 
@@ -632,20 +654,20 @@
           draft.state = "playing";
           draft.position = 0;
           draft.startedAt = Date.now();
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       };
 
       const sendNext = () => {
         const data = getData();
         const index = data.currentTrackIndex + 1;
-        if (index >= (data.playlist?.length || 0)) return;
+        if (index >= (Array.isArray(data.playlist) ? data.playlist.length : 0)) return;
         setData((draft) => {
           draft.currentTrackIndex = index;
           draft.state = "playing";
           draft.position = 0;
           draft.startedAt = Date.now();
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       };
 
@@ -660,13 +682,14 @@
         const button = event.target.closest(".playlist-item-button");
         if (!button || button.disabled) return;
         const index = Number(button.dataset.index);
-        if (!Number.isInteger(index)) return;
+        if (!Number.isInteger(index) || index < 0 ||
+            !Array.isArray(getData().playlist) || index >= getData().playlist.length) return;
         setData((draft) => {
           draft.currentTrackIndex = index;
           draft.state = "playing";
           draft.position = 0;
           draft.startedAt = Date.now();
-          draft.revision += 1;
+          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
         });
       };
 
@@ -736,9 +759,8 @@
 
     if (isRemote) {
       playhtml.presence.setMyPresence("audioHost", null);
-      const unsubscribe = playhtml.presence.onPresenceChange("audioHost", renderHostPresence);
+      playhtml.presence.onPresenceChange("audioHost", renderHostPresence);
       renderHostPresence();
-      window.addEventListener("beforeunload", unsubscribe, { once: true });
     } else {
       playhtml.presence.setMyPresence("audioHost", { ready: false });
       statusEl.textContent = "Drop MP3s to begin.";
