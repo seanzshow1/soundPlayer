@@ -185,15 +185,30 @@
     .volume output { text-align: right; font-variant-numeric: tabular-nums; }
     .mode-links {
       display: flex;
-      gap: 10px;
+      flex-wrap: wrap;
+      gap: 12px;
       margin-top: 22px;
       padding-top: 18px;
       border-top: 1px solid #e4e4e4;
     }
     .mode-link {
-      color: inherit;
-      font-size: .88rem;
+      display: inline-flex;
+      flex: 1 1 190px;
+      justify-content: center;
+      align-items: center;
+      min-height: 54px;
+      padding: 14px 18px;
+      border: 2px solid #222;
+      border-radius: 10px;
+      background: #fff;
+      color: #171717;
+      font-size: 1.05rem;
+      font-weight: 700;
+      text-align: center;
+      text-decoration: none;
     }
+    .mode-link:hover, .mode-link:focus-visible { background: #eee; }
+    .mode-link[aria-current="page"] { background: #222; color: #fff; }
     .note {
       margin: 16px 0 0;
       color: #666;
@@ -225,7 +240,7 @@
 
       <div class="host-tools">
         <button class="primary" type="button" data-enable-audio disabled>Enable remote playback</button>
-        <p>Load one or more MP3s, then press this once on the Player device. Leave this page open. You can add more MP3s to the playlist later too.</p>
+        <p>Audio is enabled automatically when you choose MP3s where the browser allows it. If it remains blocked, press Enable remote playback or Play on this device. Keep this page open.</p>
       </div>
     </section>
 
@@ -299,6 +314,10 @@
     const nextButton = root.querySelector('[data-action="next"]');
 
     modeLabel.textContent = isRemote ? "Remote" : "Player";
+    root.querySelectorAll(".mode-link").forEach((link) => {
+      const linkIsRemote = new URL(link.href).searchParams.get("mode") === "remote";
+      if (linkIsRemote === isRemote) link.setAttribute("aria-current", "page");
+    });
     playerOnly.hidden = isRemote;
     remoteNote.hidden = !isRemote;
 
@@ -435,7 +454,7 @@
 
     function renderPlaylist(data) {
       const playlist = Array.isArray(data.playlist) ? data.playlist : [];
-      const enabledNow = isRemote ? hostOnline : hostArmed;
+      const enabledNow = isRemote ? hostOnline : audioBuffers.length > 0;
 
       playlistEmptyEl.hidden = playlist.length > 0;
       playlistCountEl.textContent = playlist.length
@@ -501,6 +520,16 @@
         gainNode = audioContext.createGain();
         gainNode.connect(audioContext.destination);
       }
+      // File selection/drop is a user gesture. Request audio activation now,
+      // before any asynchronous file reading or decoding loses that gesture.
+      if (!hostArmed) {
+        audioContext.resume().then(() => {
+          if (audioBuffers.length && !hostArmed) enableRemotePlayback();
+        }).catch((error) => {
+          console.warn("Automatic audio activation was blocked:", error);
+          statusEl.textContent = "Audio blocked. Press Enable remote playback or Play.";
+        });
+      }
 
       statusEl.textContent = files.length === 1 ? "Loading MP3…" : `Loading ${files.length} MP3s…`;
 
@@ -527,13 +556,18 @@
 
       fileNameEl.textContent = `${audioBuffers.length} track${audioBuffers.length === 1 ? "" : "s"} loaded`;
 
-      if (audioBuffers.length && enableAudioButton.textContent !== "Remote playback enabled") {
+      if (audioBuffers.length && !hostArmed) {
         enableAudioButton.disabled = false;
       }
 
       statusEl.textContent = hostArmed
-        ? "Playlist updated."
-        : "MP3s loaded. Press “Enable remote playback” once.";
+        ? "Playlist updated. Remote playback enabled."
+        : "MP3s loaded. Trying to enable audio automatically; press Play if needed.";
+      setSharedControlsEnabled(audioBuffers.length > 0);
+      renderPlaylist(latestSharedData || { playlist: [], currentTrackIndex: -1 });
+      if (!hostArmed && audioContext.state === "running") {
+        await enableRemotePlayback();
+      }
       // A remote Play command may have arrived before this file finished decoding.
       if (hostArmed && latestSharedData && latestSetData) {
         applyHostTransport(latestSharedData, latestSetData);
@@ -555,6 +589,7 @@
         enableAudioButton.textContent = "Remote playback enabled";
         enableAudioButton.disabled = true;
         setSharedControlsEnabled(true);
+        renderPlaylist(latestSharedData || { playlist: [], currentTrackIndex: -1 });
         playhtml.presence.setMyPresence("audioHost", { ready: true });
         statusEl.textContent = "Player ready. You can now control it from the Remote page.";
 
@@ -584,7 +619,7 @@
       if (isRemote) {
         renderHostPresence();
       } else {
-        setSharedControlsEnabled(hostArmed);
+        setSharedControlsEnabled(audioBuffers.length > 0);
         if (hostArmed && !(data.state === "playing" && !currentSource)) {
           statusEl.textContent = data.state === "playing"
             ? "Playing from this device."
@@ -618,7 +653,13 @@
         });
       }
 
-      const sendPlay = () => {
+      const sendPlay = async () => {
+        // Clicking Play is also a user gesture, so it can unlock audio if
+        // the initial automatic activation was refused by the browser.
+        if (!isRemote && !hostArmed) {
+          await enableRemotePlayback();
+          if (!hostArmed) return;
+        }
         const data = getData();
         if (!Array.isArray(data.playlist) || !data.playlist[data.currentTrackIndex]) return;
         const position = data.state === "stopped" ? 0 : expectedPosition(data);
