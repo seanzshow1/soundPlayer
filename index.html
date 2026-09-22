@@ -272,7 +272,7 @@
     import { playhtml } from "https://unpkg.com/playhtml";
 
     // Both ?mode=player and ?mode=remote must join the same room.
-    const ROOM = "remote-mp3-player-v2"; // New room avoids the old incompatible shared state.
+    const ROOM = "remote-mp3-player-v3"; // Both pages must use this exact room.
     const params = new URLSearchParams(window.location.search);
     const isRemote = params.get("mode") === "remote";
 
@@ -369,42 +369,53 @@
 
       gainNode.gain.value = clamp(Number(data.volume ?? 0.8), 0, 1);
 
-      if (Number(data.revision) === currentSourceRevision) return;
-      currentSourceRevision = Number(data.revision);
+      const revision = Number(data.revision);
+      if (revision === currentSourceRevision &&
+          (data.state !== "playing" || currentSource)) return;
       stopLocalSource();
 
-      if (data.state !== "playing") return;
+      if (data.state !== "playing") {
+        currentSourceRevision = revision;
+        return;
+      }
 
       const buffer = audioBuffers[data.currentTrackIndex];
       if (!buffer) {
+        // Do not consume the revision: retry after the MP3 has loaded.
+        currentSourceRevision = -1;
         statusEl.textContent = "This track has not been loaded on this device yet.";
         return;
       }
 
       const offset = expectedPosition(data);
-      if (offset >= buffer.duration) {
+      if (!Number.isFinite(offset) || offset >= buffer.duration) {
         advanceOrStop(data, setData);
         return;
       }
 
-      const source = audioContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(gainNode);
-      currentSource = source;
-      currentSourceNaturalEnd = true;
-
-      source.addEventListener("ended", () => {
-        const endedNaturally = currentSource === source && currentSourceNaturalEnd;
-        if (currentSource === source) currentSource = null;
-        if (!endedNaturally) return;
-
-        const current = latestSharedData;
-        if (current?.state === "playing" && Number(current.revision) === currentSourceRevision) {
-          advanceOrStop(current, setData);
-        }
-      });
-
-      source.start(0, offset);
+      try {
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(gainNode);
+        source.addEventListener("ended", () => {
+          const endedNaturally = currentSource === source && currentSourceNaturalEnd;
+          if (currentSource === source) currentSource = null;
+          if (!endedNaturally) return;
+          const current = latestSharedData;
+          if (current?.state === "playing" && Number(current.revision) === revision) {
+            advanceOrStop(current, setData);
+          }
+        });
+        source.start(0, Math.max(0, offset));
+        currentSource = source;
+        currentSourceNaturalEnd = true;
+        currentSourceRevision = revision; // Only mark a revision handled after starting.
+        statusEl.textContent = "Audio started on this device.";
+      } catch (error) {
+        console.error("Could not start MP3 audio:", error);
+        currentSourceRevision = -1;
+        statusEl.textContent = `Audio could not start: ${error.message}`;
+      }
     }
 
     function setSharedControlsEnabled(enabledBase) {
@@ -523,6 +534,10 @@
       statusEl.textContent = hostArmed
         ? "Playlist updated."
         : "MP3s loaded. Press “Enable remote playback” once.";
+      // A remote Play command may have arrived before this file finished decoding.
+      if (hostArmed && latestSharedData && latestSetData) {
+        applyHostTransport(latestSharedData, latestSetData);
+      }
     }
 
     async function enableRemotePlayback() {
@@ -570,7 +585,7 @@
         renderHostPresence();
       } else {
         setSharedControlsEnabled(hostArmed);
-        if (hostArmed) {
+        if (hostArmed && !(data.state === "playing" && !currentSource)) {
           statusEl.textContent = data.state === "playing"
             ? "Playing from this device."
             : data.state === "paused"
@@ -607,12 +622,22 @@
         const data = getData();
         if (!Array.isArray(data.playlist) || !data.playlist[data.currentTrackIndex]) return;
         const position = data.state === "stopped" ? 0 : expectedPosition(data);
+        const next = {
+          ...data, state: "playing", position, startedAt: Date.now(),
+          revision: (Number.isFinite(data.revision) ? data.revision : 0) + 1
+        };
         setData((draft) => {
-          draft.state = "playing";
-          draft.position = position;
-          draft.startedAt = Date.now();
-          draft.revision = (Number.isFinite(draft.revision) ? draft.revision : 0) + 1;
+          draft.state = next.state;
+          draft.position = next.position;
+          draft.startedAt = next.startedAt;
+          draft.revision = next.revision;
         });
+        // Start immediately within the Mac's Play button interaction. Do not
+        // depend on the shared-state update arriving before audio can start.
+        if (!isRemote) {
+          latestSharedData = next;
+          applyHostTransport(next, setData);
+        }
       };
 
       const sendPause = () => {
@@ -673,6 +698,7 @@
 
       const sendVolume = () => {
         const value = clamp(Number(volumeEl.value), 0, 1);
+        if (!isRemote && gainNode) gainNode.gain.value = value;
         setData((draft) => {
           draft.volume = value;
         });
